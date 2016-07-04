@@ -46,7 +46,10 @@ namespace mech
 	  m_speciesNames[5] = "HO2";
 	  m_speciesNames[6] = "H2O2";
 	  m_speciesNames[7] = "H2O";
-	  m_speciesNames[8] = "N2";
+	  //m_speciesNames[8] = "N2";
+	  m_speciesNames[8]  = "TM";
+	  m_speciesNames[9]  = "FO";
+	  m_speciesNames[10] = "AV";
 
 	  // species indices 
 	  m_speciesIndex["H2"]   = 0;
@@ -57,7 +60,10 @@ namespace mech
 	  m_speciesIndex["HO2"]  = 5;
 	  m_speciesIndex["H2O2"] = 6;
 	  m_speciesIndex["H2O"]  = 7;
-	  m_speciesIndex["N2"]   = 8;
+	  //m_speciesIndex["N2"]   = 8;
+	  m_speciesNames[8]  = "TM";
+	  m_speciesNames[9]  = "FO";
+	  m_speciesNames[10] = "AV";
 
 	  // set molecular weights
 	  m_mw[0] = 2.015880e+00;
@@ -319,7 +325,7 @@ namespace mech
       v.push_back(m_combination);
       return;
     }
-    for (int i = offset; i <= m_kk-2; ++i) {  
+    for (int i = offset; i <= m_kk+1; ++i) {  
       string speciesName  = m_speciesNames[i];
       int    speciesIndex = m_speciesIndex[speciesName];
       m_combination.push_back(speciesIndex);

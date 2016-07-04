@@ -23,11 +23,13 @@ namespace mech
     mpiEnvironment& env();
     void loadData();
     void likelihood(vector<int>& csi);
+    void likelihoodFromFiles(vector<int>& csi);
     void run(int& vio, int& ver, double& t0, double& tf, double& dt);    
 
   protected:
     string          m_fileroot; 
     string          m_filename;
+    string          m_ndims;
     int             m_modid;    // model class
     int             m_Nk;       // number of data points
     double          m_sig;      // sigma
@@ -55,8 +57,7 @@ namespace mech
   void uqSolver::loadData() {
 
     ifstream inp;
-    //string   filename = "inps/rcce.intt.Dk.dat";
-    string   filename = "inps/rcce.intt.Dk.dat";
+    string   filename = "inps/rcce.logt.Dk.dat";
     inp.open(filename.c_str());
 
     while(!inp.eof()) {
@@ -114,11 +115,11 @@ namespace mech
       integ().integrate(rtm, Qk);
       
       /* (2) compute log likelihood */
-      m_llh -= pow( (m_Dk[k] - Qk[0]) * m_isig, 2.0 );
-      m_Qk.push_back(Qk[0]);
+      m_llh -= pow( (m_Dk[k] - Qk[1]) * m_isig, 2.0 );
+      m_Qk.push_back(Qk[1]);
 
       /* (3) write prediction to file */
-      out << Ti << "\t" << Qk[0] << endl;
+      out << Ti << "\t" << Qk[i] << endl;
 
       /* (4) move on to next scenario */
       Ti = Ti + 100;
@@ -129,6 +130,61 @@ namespace mech
 
     /* close output file */
     out.close();
+    
+  };
+
+  void uqSolver::likelihoodFromFiles(vector<int>& csi) {
+
+    ifstream       inp;
+    string         filename;
+    string         ndims;
+    string         specs;
+    int            flag = 0;
+    vector<double> Qk;
+    ostringstream  ostrn;
+
+    /* output file */
+    ostrn << m_modid;
+    specs = "";
+    for(int i = 0; i < csi.size(); ++i) { 
+      ostringstream ostrs;
+      ostrs << csi[i] + 1;
+      specs = specs+ostrs.str()+"-";
+    }
+    ndims    = ostrn.str();
+    m_ndims  = ndims;
+
+    filename = "outs/qois/"+ndims+"D/";
+    filename = filename+"rcce";
+    filename = filename+"."+specs+"S";
+    filename = filename+".dat";
+
+    /* read in simulation data */
+    inp.open(filename.c_str());
+    while(!inp.eof()) {
+      double scen;
+      double data;
+      inp >> scen >> data;
+      Qk.push_back(data);
+    }
+
+    /* close output file */
+    inp.close();
+
+    /* set sigma */
+    m_sig  = 0.02;
+    m_isig = 1.0 / m_sig;
+
+    /* run realization at every data point */
+    m_llh = 0.0;
+    for(int k = 0; k < m_Nk; ++k) {
+      
+      /* (1) compute log likelihood */
+      m_llh -= pow( (m_Dk[k] - Qk[k]) * m_isig, 2.0 );
+
+    }
+    
+    m_llh = 0.5 * m_llh;
     
   };
 
@@ -255,13 +311,18 @@ namespace mech
     	   << m_lps   << endl;
       cout << endl;
 
-      m_filename = "outs/pdfs/rcce.llh.1D.bin";
+      ostringstream ostrn;
+      ostrn << m_modid;
+      m_ndims = ostrn.str();
+      m_filename = "outs/pdfs/rcce.llh.";
+      m_filename = m_filename+m_ndims+"D.bin";
       ofstream outs;
       outs.open(m_filename.c_str(), ios::out | ios::binary);
       outs.write((char*) &m_vllh[0], m_vllh.size() * sizeof(double));
       outs.close();
       
-      m_filename = "outs/pdfs/rcce.pdf.1D.bin";
+      m_filename = "outs/pdfs/rcce.pdf.";
+      m_filename = m_filename+m_ndims+"D.bin";
       outs.open(m_filename.c_str());
       outs << m_modid << "\t"
     	   << m_lev   << "\t"

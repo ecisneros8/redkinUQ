@@ -14,6 +14,13 @@ namespace mech
   //! Number of Elements
   const int m_mm = 3;
 
+  //! Total Number of Moles Constraint
+  const int TM = 8;
+  //! Free Oxygen Constraint
+  const int FO = 9;
+  //! Active Valence Constraint
+  const int AV = 10;
+
   //! Universal Gas Constant. [J/kmol/K]
   const double GasConstant = 8314.4621;
 

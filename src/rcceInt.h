@@ -69,8 +69,7 @@ namespace mech {
     
   };
 
-  void rcceInt::initialize(int& vio, int& ver, int& ncs, 
-			   double& t0, double& tf, double& dt) {
+  void rcceInt::initialize(int& vio, int& ver, double& t0, double& tf, double& dt) {
     
     // Integrator options
     m_vio = vio;
@@ -78,29 +77,32 @@ namespace mech {
     m_t0  = t0;
     m_tf  = tf;
     m_dt  = dt;
-
-    // Constraints
-    m_ncs = ncs;
-    m_ng  = 0;
-    m_nc  = m_mm + m_ncs + m_ng;
-    
-    // Initialize constraint matrices & source/state vectors
-    m_statevec.setZero(m_nc);
-    m_fz.setZero(m_kk);
-    m_R.setZero(m_nc);
-    
     
   };
 
   void rcceInt::setInitialConditions(double& To, vector<int>& csi) {
 
-    m_csi.resize(2);
-    m_csi = csi;
+    m_ncs = 0;
+    m_ng  = 0;
+    for(int i = 0; i < csi.size(); ++i) {
+      if(csi[i] <  8) m_ncs += 1;
+      if(csi[i] >= 8) m_ng  += 1;
+    }
+    m_nc  = m_mm + m_ncs + m_ng;
+
+    m_statevec.setZero(m_nc);
+    m_fz.setZero(m_kk);
+    m_R.setZero(m_nc);
 
     // Fill constraints matrix
-    m_CS.setZero(m_kk,m_ncs);
-    m_BG.setZero(m_kk,1);
     m_C.setZero(m_kk,m_nc);
+    m_CS.setZero(m_kk,m_ncs);
+    if(m_ng == 0) {
+      m_BG.setZero(m_kk,1);
+    } else {
+      m_BG.setZero(m_kk,m_ng);
+    }
+    
     for(int i = 0; i < m_ncs; ++i) {
       int k     = csi[i];
       m_CS(k,i) = 1;
@@ -109,11 +111,24 @@ namespace mech {
     if(m_ng == 0) {
       m_C << m_CS, m_gas->m_Emat;
     } else {
-      for(int k = 0; k < m_kk; ++k) { m_BG(k,0) = 1.0; }
+      for(int i = m_ncs; i < m_nc; ++i) {
+	if(csi[i] == TM) {
+	  for(int k = 0; k < m_kk; ++k) { m_BG(k,i-m_ncs) = 1.0; }
+	} else if(csi[i] == FO) {
+	  m_BG(3,i-m_ncs) = 1.0;
+	  m_BG(4,i-m_ncs) = 1.0;
+	  m_BG(7,i-m_ncs) = 1.0;
+	} else if(csi[i] == AV) {
+	  m_BG(1,i-m_ncs) = 1.0;
+	  m_BG(3,i-m_ncs) = 2.0;
+	  m_BG(4,i-m_ncs) = 1.0;
+	}
+      }
       m_C << m_CS, m_gas->m_Emat, m_BG;
     }
-
+    
     // Initialize CEQ
+    vector<double> Bg(m_kk*m_ng, 0.0);
     vector<double> hi(m_kk, 0.0);
     vector<double> zc(m_kk, 0.0);
     vector<double> mw = m_gas->molecularWeights();
@@ -126,15 +141,27 @@ namespace mech {
     m_HR  = 0.0;
     m_gas->getEnthalpies_RT(To, hi);
     for(int k = 0; k < m_kk; ++k) { m_HR += zi[k] * hi[k] * To; }
-    
-    localceq_mp_ceqinit_(m_ncs, m_mm, m_ng, m_kk, m_nc, &csi[0],
-			 &To, &m_HR, &mw[0], &xi[0], &Em[0],
-			 &m_Teq, &m_T, &zc[0]);
 
+    for(int k = 0; k < m_kk; ++k) {
+      for(int i = 0; i < m_ng; ++i) {
+	Bg[i*m_kk+k] = m_BG(k,i);
+      }
+    }
+
+    localceq_mp_ceqinit_(m_ncs, m_mm, m_ng, m_kk, m_nc, &csi[0],
+			 &To, &m_HR, &mw[0], &xi[0], &Em[0], &Bg[0], 
+			 &m_Teq, &m_T, &zc[0]);
+ 
     m_Tin      = m_T;
     m_z        = VectorXd::Map(&zc[0], zc.size());
     m_statevec = m_C.transpose() * m_z;
 
+    if(m_T < 0.0) {
+      m_flag = 1; // the constraints are not realizable
+    } else {
+      m_flag = 0; // the constraints are realizable
+    }
+    
     // Output file name
     string        temps;
     string        ndims;
@@ -147,7 +174,7 @@ namespace mech {
 
     iTo = int(To);
     ostrt << iTo;
-    ostrd << m_ncs;
+    ostrd << m_ncs+m_ng;
     temps = ostrt.str();
     ndims = ostrd.str();
 
@@ -164,7 +191,7 @@ namespace mech {
     m_filename = m_filename+"."+temps+"K";
     m_filename = m_filename+"."+specs+"S";
     m_filename = m_filename+".dat";
-
+    
   };
 
   void rcceInt::integrate(double& RTM, vector<double>& QOI) {
