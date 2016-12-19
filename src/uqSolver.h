@@ -1,6 +1,7 @@
 #include "IdealGasMix.h"
 #include "odeIntegrators.h"
 #include "mpiEnvironment.h"
+#include <cfloat>
 #include <vector>
 
 using namespace std;
@@ -21,28 +22,40 @@ namespace mech
 
     Integrator&     integ();
     mpiEnvironment& env();
-    void loadData();
-    void likelihood(vector<int>& csi);
-    void likelihoodFromFiles(vector<int>& csi);
-    void run(int& vio, int& ver, double& t0, double& tf, double& dt);    
+    void            loadData(string& fuel);
+    vector<double>  realization(vector<int>& csi);
+    vector<double>  realizationFromFiles(vector<int>& csi);
+    double          likelihood(double& sigma);
+    double          gaussian(double& x);
+    double          adaptiveQuadrature(double& a, double& b, double& tol);
+    double          adaptiveSimpsons(int& level, int& maxLevel, 
+				     double& a, double& b, double& tol,
+				     double& IW);
+    double          simpsonsRule(double& a, double& b);
+    void            posteriorRepresentationLaplace(int& rank, int& jump, 
+						   int& ncsi);
+    void            posteriorRepresentation(int& rank, int& jump, int& ncsi);
+    void            run(string& fuel, int& vio, int& ver,
+			double& t0, double& tf, double& dt);    
 
   protected:
-    string          m_fileroot; 
-    string          m_filename;
-    string          m_ndims;
-    int             m_modid;    // model class
-    int             m_Nk;       // number of data points
-    double          m_sig;      // sigma
-    double          m_isig;     // inverse sigma
-    double          m_llh;      // log likelihood
-    double          m_lev;      // log evidence      
-    double          m_lpr;      // log prior
-    double          m_lps;      // log posterior
-    vector<double>  m_Dk;       // data
-    vector<double>  m_Qk;       // model class prediction
-    vector<double>  m_vllh;     // all log likelihoods
-    Integrator*     m_integ;    // pointer to integrator
-    mpiEnvironment* m_env;      // point to mpi environment
+    string                   m_fileroot; 
+    string                   m_filename;
+    string                   m_ndims;
+    string                   m_fuel;
+    int                      m_ncs;      // model class
+    int                      m_Nk;    
+    double                   m_ddm;
+    vector<double>           m_pk;
+    vector<double>           m_Sk;       // scenarios
+    vector<double>           m_Dk;       // data
+    vector<double>           m_psig;
+    vector<double>           m_prep;
+    vector<double>           m_vllh;
+    vector< vector<double> > m_yk;
+    vector< vector<int> >    m_allcsi;
+    Integrator*              m_integ;
+    mpiEnvironment*          m_env;
 
   };
 
@@ -54,283 +67,469 @@ namespace mech
     return *m_env;
   };
 
-  void uqSolver::loadData() {
+  void uqSolver::loadData(string& fuel) {
 
-    ifstream inp;
-    string   filename = "inps/rcce.logt.Dk.dat";
-    inp.open(filename.c_str());
+    /* open data files */
+    if(fuel == "H2O") {
+      
+      ifstream inp;
+      string   filename = "inps/tign.Bhaskaran.dat";
+      inp.open(filename.c_str());
 
-    while(!inp.eof()) {
-      double data;
-      inp >> data;
-      m_Dk.push_back(data);
+      /* read in data */
+      while(!inp.eof()) {
+	double scen;
+	double data;
+	inp >> scen >> data;
+	m_Sk.push_back(scen);
+	m_Dk.push_back(data);
+      }
+      m_Sk.pop_back();
+      m_Dk.pop_back();
+      m_Nk = m_Dk.size();
+ 
+    } else if(fuel == "CH4") {
+
+      ifstream inp;
+      string   filename = "inps/tign.Zhukov.dat";
+      inp.open(filename.c_str());
+
+      /* read in data */
+      while(!inp.eof()) {
+	double pres;
+	double Temp;
+	double data;
+	inp >> pres >> Temp >> data;
+	m_pk.push_back(pres);
+	m_Sk.push_back(Temp);
+	m_Dk.push_back(data);
+      }
+      m_pk.pop_back();
+      m_Sk.pop_back();
+      m_Dk.pop_back();
+      m_Nk = m_Sk.size();
+
     }
-    m_Dk.pop_back();
-    m_Nk = m_Dk.size();
+
+    /* resize model output vector */
+    m_yk.resize(m_Nk);
+
+    /* save fuel */
+    m_fuel = fuel;
 
   };
 
-  void uqSolver::likelihood(vector<int>& csi) {
+  vector<double> uqSolver::realization(vector<int>& csi) {
 
+    /* declarations */
     ofstream       out;
     string         filename;
     string         ndims;
     string         specs;
-    double         Ti = 1000;
-    double         rtm;
-    vector<double> Qk(2,0.0);
-    ostringstream  ostrn;
-    //ostringstream  ostrs;
+    int            flag;
+    double         p;
+    double         Ti;
+    double         yk;
+    vector<double> mout;
 
     /* output file */
-    ostrn << m_modid;
     specs = "";
     for(int i = 0; i < csi.size(); ++i) { 
       ostringstream ostrs;
       ostrs << csi[i] + 1;
       specs = specs+ostrs.str()+"-";
     }
-    ndims    = ostrn.str();
-    //specs    = ostrs.str();
 
-    filename = "outs/qois/"+ndims+"D/";
+    filename = "outs/mout/"+m_ndims+"D/";
     filename = filename+"rcce";
     filename = filename+"."+specs+"S";
     filename = filename+".dat";
 
+    cout.precision(4);
     out.precision(8);
     out.setf(ios::scientific);
     out.open(filename.c_str());
 
-    /* set sigma */
-    m_sig  = 0.2;
-    m_isig = 1.0 / m_sig;
-
     /* run realization at every data point */
-    m_llh = 0.0;
     for(int k = 0; k < m_Nk; ++k) {
-      
-      /* (1) integrate */
-      integ().setInitialConditions(Ti, csi);
-      integ().integrate(rtm, Qk);
-      
-      /* (2) compute log likelihood */
-      m_llh -= pow( (m_Dk[k] - Qk[1]) * m_isig, 2.0 );
-      m_Qk.push_back(Qk[1]);
 
-      /* (3) write prediction to file */
-      out << Ti << "\t" << Qk[i] << endl;
+      /* (1) set scenario */
+      if(m_fuel == "H2O") {
+	p  = 2.50 * mech::OneAtm;
+	Ti = m_Sk[k];
+      } else if(m_fuel == "CH4") {
+	p  = m_pk[k] * mech::OneAtm;
+	Ti = m_Sk[k];
+      }
+      
+      /* (2) integrate */
+      integ().setInitialConditions(p, Ti, csi);
+      integ().integrate(flag, yk);
+      mout.push_back(exp(yk) * 1.0e6);
 
-      /* (4) move on to next scenario */
-      Ti = Ti + 100;
+      /* (3) write output to file */
+      out << Ti << "\t" << yk << std::endl;
 
     }
-    
-    m_llh = 0.5 * m_llh;
 
     /* close output file */
     out.close();
+
+    /* return */
+    return(mout);
     
-  };
+  }
 
-  void uqSolver::likelihoodFromFiles(vector<int>& csi) {
-
+  vector<double> uqSolver::realizationFromFiles(vector<int>& csi) {
+    
     ifstream       inp;
     string         filename;
-    string         ndims;
     string         specs;
-    int            flag = 0;
-    vector<double> Qk;
     ostringstream  ostrn;
+    vector<double> mout;
 
-    /* output file */
-    ostrn << m_modid;
+    /* input file */
     specs = "";
-    for(int i = 0; i < csi.size(); ++i) { 
+    for(int i = 0; i < csi.size(); ++i) {
       ostringstream ostrs;
       ostrs << csi[i] + 1;
-      specs = specs+ostrs.str()+"-";
+      specs = specs + ostrs.str() + "-";
     }
-    ndims    = ostrn.str();
-    m_ndims  = ndims;
 
-    filename = "outs/qois/"+ndims+"D/";
+    filename = "outs/mout/"+m_ndims+"D/";
     filename = filename+"rcce";
     filename = filename+"."+specs+"S";
     filename = filename+".dat";
 
-    /* read in simulation data */
+    /* retrieve model outputs */
     inp.open(filename.c_str());
     while(!inp.eof()) {
-      double scen;
-      double data;
-      inp >> scen >> data;
-      Qk.push_back(data);
+      double temp;
+      double yk;
+      inp >> temp >> yk;
+      yk = exp(yk) * 1.0e6;
+      mout.push_back(yk);
     }
-
-    /* close output file */
     inp.close();
+    mout.pop_back();
 
-    /* set sigma */
-    m_sig  = 0.02;
-    m_isig = 1.0 / m_sig;
+    return(mout);
+     
+  }
 
-    /* run realization at every data point */
-    m_llh = 0.0;
-    for(int k = 0; k < m_Nk; ++k) {
+  double uqSolver::likelihood(double& sigma) {
+
+    /* declaration */
+    double g;
+    double lh;
+    double llh;
+
+    g = 1.0 / sigma;
+    for(int k = 0; k < m_Nk-1; ++k) { g *= 1.0 / sigma; }
+
+    llh = -0.5 * m_ddm / (sigma * sigma);
+    llh =  llh; // - m_Nk * log(sigma);
+    lh  =  g * exp(llh);
+
+    /* return */
+    return(lh);
+
+  }
+
+  void uqSolver::posteriorRepresentationLaplace(int& rank, int& jump, int& ncsi) {
+
+    /* declarations */
+    ofstream                 out;
+    string                   filename;
+    double                   n  = m_Nk;
+    double                   nh = 0.5 * m_Nk;
+    double                   mh = 0.5 * (m_Nk - 1);
+    double                   novc;
+    double                   fc;
+    double                   pc;
+    vector<double>           prep;
+    ostringstream            orank;
+
+    /* output file */
+    orank    << rank;
+    filename = "outs/prep/"+m_ndims+"D/";
+    filename = filename+"gri30.prep."+orank.str()+".dat";
+    out.precision(6);
+    out.setf(ios::scientific);
+    out.open(filename.c_str());    
+
+    /* compute statistics */
+    fc = 2.0 * M_PI;
+    fc = fc / (3.0 * n);
+    fc = sqrt(fc);
+
+    for(int i = 0; i < ncsi; ++i) {
+
+      double c = 0.0;
+      for(int k = 0; k < m_Nk; ++k) {
+	double d = (m_yk[i][k] - m_Dk[k]) / m_Dk[k];
+	c += d*d;
+      }
       
-      /* (1) compute log likelihood */
-      m_llh -= pow( (m_Dk[k] - Qk[k]) * m_isig, 2.0 );
+      novc = n/c;
+      pc   = fc * pow(novc, mh) * exp(-nh);
+      prep.push_back(pc);
 
+      /* output */
+      cout << rank << "\t" << i*jump+rank << "\t";
+      for(int s = 0; s < m_ncs; ++s) { 
+	cout << integ().gas().m_speciesNames[m_allcsi[i*jump+rank-1][s]] << "\t";
+	out  << integ().gas().m_speciesNames[m_allcsi[i*jump+rank-1][s]] << "\t";
+      }
+      cout << prep[i] << endl;
+      out  << prep[i] << endl;
+      
+    }
+
+    cout << "Done with rank " << rank << endl;
+    cout << endl;
+    
+    /* close output file */
+    out.close();
+
+  }
+
+  double uqSolver::adaptiveQuadrature(double& a, double& b, double& tol) {
+
+    int maxLevel = 10;
+    int myLevel  = 0;
+    double IW = simpsonsRule(a, b);
+    double I  = adaptiveSimpsons(myLevel, maxLevel, a, b, tol, IW);
+    return(I);
+
+  }
+
+  double uqSolver::adaptiveSimpsons(int& level, int& maxLevel, 
+				    double& a, double& b, double& tol, 
+				    double& IW) {
+
+    double c  = 0.5 * (a + b);
+    double IL = simpsonsRule(a, c);
+    double IR = simpsonsRule(c, b);
+    double II = IL + IR;
+    double I;
+
+    if(level == maxLevel || fabs(II-IW) <= 15.0 * tol) {
+      I = II + (II-IW)/15.0;
+      return(I);
     }
     
-    m_llh = 0.5 * m_llh;
+    int    newlev = level + 1;
+    double newtol = 0.5 * tol;
+    I = adaptiveSimpsons(newlev,maxLevel,a,c,newtol,IL) + 
+      adaptiveSimpsons(newlev,maxLevel,c,b,newtol,IR);
+    return(I);
+
+  }
+
+  double uqSolver::simpsonsRule(double& a, double& b) {
+
+    double c = 0.5 * (a + b);
+    double fa = likelihood(a);
+    double fb = likelihood(b);
+    double fc = likelihood(c);
+    double I  = OneSixth * (b-a) * (fa + 4.0 * fc + fb);
     
-  };
+    return(I);
 
-  void uqSolver::run(int& vio, int& ver, double& t0, double& tf, double& dt) {
+  }
+  
+  void uqSolver::posteriorRepresentation(int& rank, int& jump, int& ncsi) {
 
-    int    tag = 0;
-    int    rank = env().worldRank();
-    int    root = env().worldRoot();
-    int    size = env().worldSize();
-    double llh;
-    vector<int>              msg(2,0);
-    vector<int>              csi;
-    vector<int>              local_size;
-    vector< vector<int> >    local_csi;
-    vector< vector<int> >    all_csi;
-    vector<double>::iterator mllh;
+    /* declarations */
+    ofstream                 out;
+    string                   filename;
+    double                   IL;
+    double                   IR;
+    double                   sigopt;
+    double                   sigmin = 1.0e-03;
+    double                   sigmax = 1.0;
+    double                   tol    = 1.0e-06;
+    vector<double>           prep;
+    ostringstream            orank;
+
+    /* output file */
+    orank    << rank;
+    filename = "outs/prep/"+m_ndims+"D/";
+    filename = filename+"gri30.prep."+orank.str()+".dat";
+    out.precision(6);
+    out.setf(ios::scientific);
+    out.open(filename.c_str());
+
+    /* compute statistics */
+    for(int i = 0; i < ncsi; ++i) {
+
+      /* data mismatch */
+      m_ddm = 0.0;
+      for(int k = 0; k < m_Nk; ++k) {
+  	double d = (m_yk[i][k] - m_Dk[k]) / m_Dk[k];
+  	m_ddm += d*d;
+      }
+      
+      sigopt = sqrt(2.0 * m_ddm / m_Nk);
+      
+      IL = adaptiveQuadrature(sigmin, sigopt, tol);
+      IR = adaptiveQuadrature(sigopt, sigmax, tol);
+      prep.push_back(IL+IR);
+
+      /* output */
+      cout << rank << "\t" << i*jump+rank << "\t";
+      for(int s = 0; s < m_ncs; ++s) {
+  	cout << integ().gas().m_speciesNames[m_allcsi[i*jump+rank-1][s]] << "\t";
+  	out  << integ().gas().m_speciesNames[m_allcsi[i*jump+rank-1][s]] << "\t";
+      }
+      cout << prep[i] << endl;
+      out  << prep[i] << endl;
+      
+    }
+
+    cout << "Done with rank " << rank << endl;
+    cout << endl;
+    
+    /* close output file */
+    out.close();
+
+  }
+
+  void uqSolver::run(string& fuel, int& vio, int& ver,
+		     double& t0, double& tf, double& dt) {
+
+    ofstream              out;
+    string                filename;
+    int                   ncsi   = 0;
+    int                   tag    = 0;
+    int                   rank   = env().worldRank();
+    int                   root   = env().worldRoot();
+    int                   size   = env().worldSize();
+    int                   jump   = env().worldSize()-1;
+    int                   nsig   = 100;
+    double                sigmin = 0.05;
+    double                sigmax = 1.00;
+    vector<double>        psig;
+    vector<int>           msg(2,0);
+    vector<int>           csi;
+    vector<int>           local_size;
+    vector< vector<int> > local_csi;
+    ostringstream         ostrncs;
+    ostringstream         orank;
 
     /* model class */
-    m_modid = env().worldOpts();
+    m_ncs   = env().worldOpts();
+    ostrncs << m_ncs;
+    m_ndims = ostrncs.str();
 
     /* load data */
-    loadData();
- 
+    loadData(fuel);
+
     /* initialize integrator */
-    integ().initialize(vio, ver, m_modid, t0, tf, dt);
+    integ().initialize(vio, ver, t0, tf, dt);
 
     /* access parameter space */
-    integ().gas().getCombinations(0, m_modid, all_csi);
-    csi.resize(m_modid);
+    integ().gas().getCombinations(0, m_ncs, m_allcsi);
+    csi.resize(m_ncs);
     
-    /* greetings */
     if(rank != root) {
 
-      for(vector< vector<int> >::iterator it = all_csi.begin();
-	  it != all_csi.end(); it+=env().worldSize()-1) {
-	if(it+rank-1 >= all_csi.end()) break;
-	local_csi.push_back(*(it+rank-1));
+      /* distribute combinations across processes */
+      for(vector< vector<int> >::iterator it = m_allcsi.begin();
+    	  it != m_allcsi.end(); it+=env().worldSize()-1) {
+    	if(it+rank-1 >= m_allcsi.end()) break;
+    	local_csi.push_back(*(it+rank-1));
       }
 
+      /* number of local combinations */
+      ncsi = local_csi.size();
+
+      /* resize vector of model output vectors */
+      m_yk.resize(ncsi);
+
+      /* talk to root */
       msg[0] = rank;
-      msg[1] = local_csi.size();
+      msg[1] = ncsi;
       env().sendMessage(&msg[0], 2 * sizeof(int), MPI_INT, root, tag);
 
     } else {
 
-      cout << endl;
-      cout << "Greetings from root!" << endl;
-      cout << "World size is " << env().worldSize() << endl;
-      cout << "Working with " << m_modid << "D RCCE" << endl;
-      cout << "Integrators initialized with:" << endl;
-      cout << "\t vio = " << vio << endl;
-      cout << "\t ver = " << ver << endl; 
-      cout << "\t t0  = " << t0 << endl;
-      cout << "\t tf  = " << tf << endl;
-      cout << "\t dt  = " << dt << endl;
-      cout << "Size of parameter space is " << all_csi.size() << endl;
-      cout << "Working with " << m_Nk << " data points" << endl;
-      cout << endl;
+      filename = "outs/logs/"+m_ndims+"D/";
+      filename = filename+"gri30.run.root.log";
+      out.open(filename.c_str());
+
+      /* greetings */
+      out << endl;
+      out << "Greetings from root!" << endl;
+      out << "World size is " << env().worldSize() << endl;
+      out << "Working with " << m_ncs << "D RCCE" << endl;
+      out << "Integrators initialized with:" << endl;
+      out << "\t vio = " << vio << endl;
+      out << "\t ver = " << ver << endl;
+      out << "\t t0  = " << t0 << endl;
+      out << "\t tf  = " << tf << endl;
+      out << "\t dt  = " << dt << endl;
+      out << "Size of parameter space is " << m_allcsi.size() << endl;
+      out << "Working with " << m_Nk << " data points" << endl;
+      out << endl;
       
       for(int source = 1; source < env().worldSize(); ++source) {
-	env().receiveMessage(&msg[0], 2 * sizeof(int), MPI_INT, source, tag);
-	cout << "Rank " << msg[0] << " is alive!" << endl;
-	cout << "Working with " << msg[1] << " combinations" << endl;
-	cout << endl;
-	local_size.push_back(msg[1]);
+    	env().receiveMessage(&msg[0], 2 * sizeof(int), MPI_INT, source, tag);
+    	out << "Rank " << msg[0] << " is alive!" << endl;
+    	out << "Working with " << msg[1] << " combinations" << endl;
+    	out << endl;
+    	local_size.push_back(msg[1]);
       }
-      cout << endl;
+      out << endl;
+      out.close();
 
     }
 
+    /* run */
     if(rank != root) {
 
+      /* open log file */
+      orank    << rank;
+      filename = "outs/logs/"+m_ndims+"D/";
+      filename = filename+"gri30.run."+orank.str()+".log";
+      
+      out.open(filename.c_str());
+      
+      /* model outputs */
       for(int i = 0; i < local_csi.size(); ++i) {
 	
-	/* compute likelihood */
-	csi = local_csi[i];
-	likelihood(csi);
-	
-	/* send likelihood to root */
-	env().sendMessage(&m_llh, sizeof(double), MPI_DOUBLE, root, tag);
+    	/* print m.id. to log */
+    	out  << "Working with the " << i
+    	     << "th local combination, " << i*jump+rank
+    	     << "th overall..." << endl;
+    	out  << "Represented Species: " << endl;
+    	cout << "Represented Species: " << endl;
+    	for(int s = 0; s < m_ncs; ++s) {
+    	  	cout << integ().gas().m_speciesNames[m_allcsi[i*jump+rank-1][s]] << "\t";
+    		out << integ().gas().m_speciesNames[m_allcsi[i*jump+rank-1][s]] << "\t";
+    	}
+    	cout << endl;
+    	out << endl;
+
+    	/* compute ignition times */
+    	csi  = local_csi[i];
+    	//vector<double> yi = realization(csi);
+    	vector<double> yi = realizationFromFiles(csi);
+    	cout << "Done!" << endl;
+    	cout << endl;
+    	m_yk[i] = yi;
 
       }
 
-    } else {
+      out.close();
 
-      for(int source = 1; source < env().worldSize(); ++source) {	
+      /* compute and write posteriors */
+      posteriorRepresentation(rank, jump, ncsi);
 
-	for(int i = 0; i < local_size[source-1]; ++i) {
-
-	  /* receive llh from source */
-	  cout << "Receiving likelihood from Rank " << source << endl;
-	  env().receiveMessage(&llh, sizeof(double), MPI_DOUBLE, source, tag);
-	  m_vllh.push_back(llh);
-	
-	  /* print to screen */
-	  int jump = env().worldSize()-1;
-	  cout << source << "\t" << i*jump+source << "\t";
-	  for(int s = 0; s < m_modid; ++s) {
-	    cout << integ().gas().m_speciesNames[all_csi[i*jump+source-1][s]] 
-		 << "\t";
-	  }
-	  cout << llh << endl;
-	  cout << endl;
-
-	}
-
-      };
-
-      /* compute evidence */
-      mllh  = max_element(m_vllh.begin(), m_vllh.end());
-      m_lev = 0.0;
-      for(int i = 0; i < m_vllh.size(); ++i) { m_lev += exp(m_vllh[i] - *mllh); }
-      m_lev = log(m_lev) + *mllh;
-
-      /* impose occam penalty */
-      m_lpr = -log(all_csi.size());
-      m_lps =  m_lev + m_lpr;
-
-      /* final output */
-      cout << endl;
-      cout << m_modid << "\t"
-    	   << m_lev   << "\t"
-    	   << m_lpr   << "\t"
-    	   << m_lps   << endl;
-      cout << endl;
-
-      ostringstream ostrn;
-      ostrn << m_modid;
-      m_ndims = ostrn.str();
-      m_filename = "outs/pdfs/rcce.llh.";
-      m_filename = m_filename+m_ndims+"D.bin";
-      ofstream outs;
-      outs.open(m_filename.c_str(), ios::out | ios::binary);
-      outs.write((char*) &m_vllh[0], m_vllh.size() * sizeof(double));
-      outs.close();
-      
-      m_filename = "outs/pdfs/rcce.pdf.";
-      m_filename = m_filename+m_ndims+"D.bin";
-      outs.open(m_filename.c_str());
-      outs << m_modid << "\t"
-    	   << m_lev   << "\t"
-    	   << m_lpr   << endl;
-      outs.close();
     }
 
-  };
+  }
 
 }
 

@@ -5,18 +5,25 @@
 #include <sstream>
 #include <string>
 #include <chrono>
+#include <cvode/cvode.h>
+#include <cvode/cvode_dense.h>
+#include <nvector/nvector_serial.h>
+#include <sundials/sundials_dense.h>
+#include <sundials/sundials_types.h>
 
 using namespace std;
 using namespace std::chrono;
 
 extern "C" {
   void localceq_mp_ceqinit_(int& ncs, const int& ne, int& ng, const int& ns,
-			    int& nc, int* csi, double* Ti, double* hi, double* mw,
-			    double* xi, double* Ein, double* Tad, double* Teq,
-			    double* zeq);
+			    int& nc, int* csi, double* Ti, double* pi, 
+			    double* hi, double* mw, double* xi, 
+			    double* Ein, double* Bg, double* Tad, 
+			    double* Teq, double* zeq);
 
-  void localceq_mp_ceqcalc_(int& nc, const int& ns,
-			    double* hr, double* c, double* T, double* z);
+  void localceq_mp_ceqrecon_(int& nc, const int& ns,
+			      double* p, double* hr, double* c, double* T, 
+			      double* z, int& flag);
 }
 
 namespace mech {
@@ -26,48 +33,70 @@ namespace mech {
   public:
 
   rcceInt(IdealGasMix& gas) :
-    m_type(2) { m_gas = &gas; };
+    m_type(2),
+      m_method(CV_BDF),
+      m_iter(CV_NEWTON) 
+      { m_gas = &gas; };
     
     int integratorType() { return m_type; }
 
     IdealGasMix& gas() { return *m_gas; }
     
-    void initialize(int& vio, int& ver, int& ncs, double& t0, double& tf, double& dt);
+    void initialize(int& vio, int& ver, double& t0, double& tf, double& dt);
 
-    void setInitialConditions(double& To, vector<int>& csi);
+    void setInitialConditions(double& p, double& To, vector<int>& csi);
 
-    void integrate(double& RTM, vector<double>& QOI);
+    void integrate(int& flag, double& QoI);
 
-    void rcce_rhs(double& t, VectorXd& statevec, VectorXd& fz);
+    static int rcce_rhs(realtype t, N_Vector z, N_Vector zdot, void* f_data);
 
     void rcce_jac();
 
   private:
-    string      m_filename;
-    int         m_vio;
-    int         m_ver;
-    int         m_type;     
-    int         m_ncs;      // # constraint species
-    int         m_ng;       // # linear constraint
-    int         m_nc;       // # constraints
-    double      m_t0;       // init time
-    double      m_tf;       // final time
-    double      m_dt;       // time step
-    double      m_T;        // temperature
-    double      m_Tin;      // initial temperature
-    double      m_Tor;      // original (scenario) temperature
-    double      m_Teq;      // equilibrium temperature
-    double      m_HR;       // molar enthalpy over gas constant
-    VectorXd    m_z;        // specific moles
-    VectorXd    m_statevec; // state vector
-    VectorXd    m_fz;       // chemistry source
-    VectorXd    m_R;        // Source term
-    MatrixXd    m_CS;       // species constraints
-    MatrixXd    m_BG;       // general constraints
-    MatrixXd    m_C;        // constraints matrix
-    vector<int> m_csi;
-    
+    static bool     m_stop;
+    string          m_filename;    
+    void*           m_cvode_mem;
+    void*           m_cvode_data;
+    int             m_cvode_flag;
+    int             m_vio;
+    int             m_ver;
+    int             m_type;    
+    int             m_method;
+    int             m_flag;     // realizability of constraints
+    int             m_ncs;      // # constraint species
+    int             m_ng;       // # linear constraint
+    static int      m_nc;       // # constraints
+    int             m_iter;
+    int             m_neq;
+    double          m_t0;       // init time
+    double          m_tf;       // final time
+    double          m_dt;       // time step
+    static double   m_T;        // temperature
+    double          m_Tin;      // initial temperature
+    double          m_Tor;      // original (scenario) temperature
+    double          m_Teq;      // equilibrium temperature
+    double          m_rtol;
+    N_Vector        m_atol;
+    N_Vector        m_statevec;
+    static double   m_HR;       // molar enthalpy over gas constant
+    static VectorXd m_z;        // specific moles
+    VectorXd        m_c;
+    static VectorXd m_fz;       // chemistry source
+    static VectorXd m_R;        // Source term
+    MatrixXd        m_CS;       // species constraints
+    MatrixXd        m_BG;       // general constraints
+    static MatrixXd m_C;        // constraints matrix
+     
   };
+
+  bool     rcceInt::m_stop;
+  int      rcceInt::m_nc;
+  double   rcceInt::m_T;
+  double   rcceInt::m_HR;
+  VectorXd rcceInt::m_z;
+  VectorXd rcceInt::m_fz;
+  VectorXd rcceInt::m_R;
+  MatrixXd rcceInt::m_C;
 
   void rcceInt::initialize(int& vio, int& ver, double& t0, double& tf, double& dt) {
     
@@ -80,17 +109,18 @@ namespace mech {
     
   };
 
-  void rcceInt::setInitialConditions(double& To, vector<int>& csi) {
+  void rcceInt::setInitialConditions(double& p, double& To, vector<int>& csi) {
 
-    m_ncs = 0;
+    // set pressure
+    m_gas->setPressure(p);
+    
+    // number of constraints
+    m_ncs = csi.size();
     m_ng  = 0;
-    for(int i = 0; i < csi.size(); ++i) {
-      if(csi[i] <  8) m_ncs += 1;
-      if(csi[i] >= 8) m_ng  += 1;
-    }
     m_nc  = m_mm + m_ncs + m_ng;
+    m_neq = m_nc;
 
-    m_statevec.setZero(m_nc);
+    m_c.setZero(m_nc);
     m_fz.setZero(m_kk);
     m_R.setZero(m_nc);
 
@@ -107,27 +137,16 @@ namespace mech {
       int k     = csi[i];
       m_CS(k,i) = 1;
     }
-
+    
     if(m_ng == 0) {
       m_C << m_CS, m_gas->m_Emat;
     } else {
-      for(int i = m_ncs; i < m_nc; ++i) {
-	if(csi[i] == TM) {
-	  for(int k = 0; k < m_kk; ++k) { m_BG(k,i-m_ncs) = 1.0; }
-	} else if(csi[i] == FO) {
-	  m_BG(3,i-m_ncs) = 1.0;
-	  m_BG(4,i-m_ncs) = 1.0;
-	  m_BG(7,i-m_ncs) = 1.0;
-	} else if(csi[i] == AV) {
-	  m_BG(1,i-m_ncs) = 1.0;
-	  m_BG(3,i-m_ncs) = 2.0;
-	  m_BG(4,i-m_ncs) = 1.0;
-	}
-      }
+      for(int k = 0; k < m_kk; ++k) { m_BG(k,0) = 1.0; }
       m_C << m_CS, m_gas->m_Emat, m_BG;
     }
     
     // Initialize CEQ
+    double         patm;
     vector<double> Bg(m_kk*m_ng, 0.0);
     vector<double> hi(m_kk, 0.0);
     vector<double> zc(m_kk, 0.0);
@@ -136,6 +155,7 @@ namespace mech {
     vector<double> zi = m_gas->specificMoles();
     vector<double> Em = m_gas->elementMatrix();
 
+    patm  = m_gas->m_pres / OneAtm;
     m_Tor = To;
     m_Tin = To;
     m_HR  = 0.0;
@@ -149,19 +169,39 @@ namespace mech {
     }
 
     localceq_mp_ceqinit_(m_ncs, m_mm, m_ng, m_kk, m_nc, &csi[0],
-			 &To, &m_HR, &mw[0], &xi[0], &Em[0], &Bg[0], 
+			 &To, &patm, &m_HR, &mw[0], &xi[0], &Em[0], &Bg[0], 
 			 &m_Teq, &m_T, &zc[0]);
  
-    m_Tin      = m_T;
-    m_z        = VectorXd::Map(&zc[0], zc.size());
-    m_statevec = m_C.transpose() * m_z;
-
+    m_Tin  = m_T;
+    m_z    = VectorXd::Map(&zc[0], zc.size());
+    m_c    = m_C.transpose() * m_z;
+    
     if(m_T < 0.0) {
       m_flag = 1; // the constraints are not realizable
     } else {
       m_flag = 0; // the constraints are realizable
     }
-    
+
+    // Initialize CVODE
+    m_cvode_mem  = NULL;
+    m_cvode_data = NULL;
+    m_atol       = NULL;
+    m_statevec   = NULL;
+
+    m_statevec = N_VNew_Serial(m_neq);
+    m_atol     = N_VNew_Serial(m_neq);
+
+    m_rtol = 1.0e-06;
+    for(int i = 0; i < m_neq; ++i) { Ith(m_statevec,i+1) = m_c(i); }
+    for(int i = 0; i < m_neq; ++i) { Ith(m_atol,i+1)     = 1.0e-08; }
+
+    m_cvode_mem  = CVodeCreate(m_method, m_iter);
+    m_cvode_flag = CVodeInit(m_cvode_mem, rcce_rhs, m_t0, m_statevec);
+    m_cvode_flag = CVodeSVtolerances(m_cvode_mem, m_rtol, m_atol);
+    m_cvode_flag = CVDense(m_cvode_mem, m_neq);
+    m_cvode_flag = CVDlsSetDenseJacFn(m_cvode_mem, NULL);
+    m_cvode_flag = CVodeSetMinStep(m_cvode_mem, 1.0e-14);
+
     // Output file name
     string        temps;
     string        ndims;
@@ -194,142 +234,135 @@ namespace mech {
     
   };
 
-  void rcceInt::integrate(double& RTM, vector<double>& QOI) {
+  void rcceInt::integrate(int& flag, double& QoI) {
 
     ofstream out;
     int      i  = 0;
-    double   tn = m_t0;
+    int      iprint = (int) (1.0e-6/m_dt);
+    realtype t = m_t0;
+    double   tout = m_t0 + m_dt;
     double   funt = 0.0;
     double   qnum = 0.0;
     double   qden = 0.0;
     double   qoin = 0.0;
     double   qoid = 0.0;
-    double   qoit = 0.0;
     double   old_time;
     double   old_temp;
     double   old_funt;
-    VectorXd  u(m_nc);
-    VectorXd k1(m_nc);
-    VectorXd k2(m_nc);
-    VectorXd k3(m_nc);
-    VectorXd k4(m_nc);
-    
+    VectorXd statevec(m_nc);
+
     if(m_vio) {
+      for(int k = 0; k < m_nc; ++k) { statevec(k) = Ith(m_statevec,k+1); }
       out.precision(8);
       out.setf(ios::scientific);
       out.open(m_filename.c_str());
-      out << tn    << "\t"
-	  << m_T   << "\t" 
-	  << m_Teq << "\t"
-	  << m_Tin << "\t"
-	  << funt  << "\t"
-	  << qoin  << "\t"
-	  << qoid << endl;
+      out << t
+	  << "\t" << m_T
+	  << "\t" << m_Teq << endl;
     }
 
-    high_resolution_clock::time_point start_clock = high_resolution_clock::now();
-    
-    while(1) {
+    if(m_ver == 1 && i%iprint == 0) {
+      cout << endl;
+      cout << t
+	   << "\t" << m_T
+	   << "\t" << m_Teq << endl;
+    }
+ 
+    if(m_flag == 0) {
 
-      /* previous soln */
-      old_time = tn;
-      old_temp = m_T;
-      old_funt = pow(m_Teq - old_temp, 3.0) * pow(old_temp - m_Tin, 2.0);
+      while(1) {
+	
+	/* previous soln */
+	old_time = t;
+	old_temp = m_T;
+	old_funt = pow(m_Teq - old_temp, 8.0) * pow(old_temp - m_Tin, 8.0);
 
-      /* 4th Order Runge-Kutta */
-      u  = m_statevec;
-      rcce_rhs(tn, u, k1);
-      k1 = m_dt * k1;
-      
-      u  = m_statevec + 0.5 * k1;
-      rcce_rhs(tn, u, k2);
-      k2 = m_dt * k2;
+	/* integrate */
+	m_cvode_flag = CVode(m_cvode_mem, tout, m_statevec, &t, CV_NORMAL);
+	
+	if(m_cvode_flag == 0) {
+	  tout += m_dt;
+	  i    += 1;
 
-      u  = m_statevec + 0.5 * k2;
-      rcce_rhs(tn, u, k3);
-      k3 = m_dt * k3;
+	  /* qoi */
+	  funt  = pow(m_Teq - m_T, 8.0) * pow(m_T - m_Tin, 8.0);
+	  qnum  = funt * log(t) + old_funt * log(old_time);
+	  qden  = funt + old_funt;
+	  qoin += (log(t) - log(old_time)) * qnum;
+	  qoid += (log(t) - log(old_time)) * qden;
 
-      u  = m_statevec + k3;
-      rcce_rhs(tn, u, k4);
-      k4 = m_dt * k4;
+	  for(int k = 0; k < m_nc; ++k) { statevec(k) = Ith(m_statevec,k+1); }
+	  
+	  /* output */
+	  if(m_ver == 1 && i%iprint == 0) {
+	    cout << endl;
+	    cout << t
+		 << "\t" << m_T
+		 << "\t" << m_Teq
+		 << "\t" << qoin/qoid << endl;
+	  }
+	  if(m_vio == 1 && i%iprint == 0) {
+	    out << t
+		<< "\t" << m_T
+		<< "\t" << m_Teq << endl;
+	  }
 
-      m_statevec = m_statevec + OneSixth * (k1 + 2.0 * k2 + 2.0 * k3 + k4);
-      
-      tn = tn + m_dt;
-      i  = i  + 1;      
-   
-      /* qoi */
-      funt  = pow(m_Teq - m_T, 3.0) * pow(m_T - m_Tin, 2.0);
-      qnum  = funt * log(tn) + old_funt * log(old_time);
-      qden  = funt + old_funt;
-      qoin += (log(tn) - log(old_time)) * qnum;
-      qoid += (log(tn) - log(old_time)) * qden;
-      qoit += 0.5 * (tn - old_time) * (m_T + old_temp); 
+	} else {
 
-      /* output */
-      if(m_ver == 1 /* && i%100 == 0 */) {
-	cout << endl;
-	cout << tn
-	     << "\t" << m_Tor
-	     << "\t" << m_T
-	     << "\t" << m_Teq
-	     << "\t" << m_Tin
-	     << "\t" << qoit << endl;
-	cout << endl;
-      }
-      if(m_vio == 1) {
-	out << tn    << "\t"
-	    << m_T   << "\t" 
-	    << m_Teq << "\t"
-	    << m_Tin << "\t"
-	    << funt  << "\t" 
-	    << qoin  << "\t" 
-	    << qoid  << endl;
-      }
-      
-      if(tn >= m_tf || abs(m_T - m_Teq) < 0.05) {
-	if(tn < m_tf) {
-	  qoit += m_Teq *(m_tf-tn);
+	  std::cout << "Dump CVode! \n" << std::endl;
+	  qoin = -1.0e10;
+	  qoid =  1.0e00;
+	  break;
+
 	}
-	if(qoin == 0.0 && qoid == 0 && abs(m_T - m_Teq < 0.05)) {
-	  qoid = 1.0;
-	}
-	out << m_tf << "\t" 
-	    << m_T  << "\t" 
-	    << m_Teq << "\t"
-	    << m_Tin << "\t"
-	    << funt << "\t" 
-	    << qoin << "\t" 
-	    << qoid << endl;
-	out.close();
-	break;
+
+	if(tout >= m_tf) break;
+
       }
 
+      QoI = qoin/qoid;
+
+    } else {
+
+      QoI = -1.0e10;
+      
     }
 
-    high_resolution_clock::time_point end_clock = high_resolution_clock::now();
-    auto duration = duration_cast<microseconds>(end_clock - start_clock).count();
-    RTM = duration;
-
-    QOI[0] = qoit;
-    QOI[1] = qoin/qoid;
+    out.close();
+    N_VDestroy_Serial(m_statevec);
+    N_VDestroy_Serial(m_atol);
+    CVodeFree(&m_cvode_mem);
 
   };
 
-  void rcceInt::rcce_rhs(double& t, VectorXd& statevec, VectorXd& R) {
+  int rcceInt::rcce_rhs(realtype t, N_Vector c, N_Vector cdot, void* f_data) {
 
+    int            flag;
+    double         patm       = m_gas->m_pres / OneAtm;
+    double*        local_c    = NV_DATA_S(c);
+    double*        local_cdot = NV_DATA_S(cdot);
     vector<double> ci(m_nc,0.0);
     vector<double> zi(m_kk,0.0);
     vector<double> fz(m_kk,0.0);
 
-    VectorXd::Map(&ci[0], statevec.size()) = statevec;
-    localceq_mp_ceqcalc_(m_nc, m_kk, &m_HR, &ci[0], &m_T, &zi[0]);
+    for(int i = 0; i < m_nc; ++i) { ci[i] = local_c[i]; }
+    localceq_mp_ceqrecon_(m_nc, m_kk, &patm, &m_HR, &ci[0], &m_T, &zi[0], flag);
 
     m_gas->getNetProductionRates(m_T, zi, fz);
     m_fz = VectorXd::Map(&fz[0], fz.size());
     m_R  = m_C.transpose() * m_fz;
-    R    = m_R;
-     
+    for(int i = 0; i < m_nc; ++i) { local_cdot[i] = m_R(i); }
+
+    /*std::cout << "------------------------------------" << std::endl;
+    std::cout << t << "\t" << m_R.transpose() << std::endl;
+    std::cout << "------------------------------------" << std::endl;*/
+
+    if(flag == 1) {
+      return(1);
+    } else {
+      return(0);
+    }
+      
   };
 
   void rcceInt::rcce_jac() {
