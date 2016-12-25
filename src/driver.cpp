@@ -1,7 +1,6 @@
 #include "uqSolver.h"
 
 using namespace std;
-using namespace mech;
 
 /* run rcce */
 int main(int argc, char **argv) {
@@ -28,34 +27,11 @@ int main(int argc, char **argv) {
   MPI_Init(&argc, &argv);
   mpiEnvironment myEnv(MPI_COMM_WORLD,argv[1]);
 
-  /* set initial conditions */
-  if(fuel == "H2O") {
-    
-    /* hydrogen-air combustion */
-    /* nux */
-    nux   = 0.50e0;
-    /* H2 */
-    xi[0] = oar * phi / (nux + oar * phi);
-    /* O2 */
-    xi[2] = nux * xi[0] / phi;
-    /* N2 */
-    xi[8] = 1.0 - (1.0 + nux/phi) * xi[0];
-
-  } else if(fuel == "CH4") {
-
-    /* methane-air combustion */
-    /* nux */
-    nux    = 2.00e0;
-    /* CH4 */
-    xi[13] = oar * phi / (nux + oar * phi);
-    /* O2  */
-    xi[3]  = nux * xi[13] / phi;
-    /* N2  */
-    xi[47] = 1.0 - (1.0 + nux/phi) * xi[13];
-
-  }
-
-  IdealGasMix myGas(Ti, p, xi);
+  /* ideal gas mixture */
+  std::string fuel = "H2O";
+  std::string mech = "sanDiego";
+  std::string ctif = "ctis/"+mech+".cti";
+  Cantera::IdealGasMix myGas(ctif,"gas");
 
   /* uq solver */
   uqSolver solver(myEnv,myGas);

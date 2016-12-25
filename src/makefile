@@ -24,5 +24,5 @@ driver.o: driver.cpp localCEQ.o
 clean:
 	rm *.o
 
-dist-clean:
+real-clean:
 	rm *~
