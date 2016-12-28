@@ -1,24 +1,26 @@
-CXX   = mpicxx -std=c++0x
+include $(WORK)/cantera-2.2.1/cantera-2.2.1/include/cantera/Cantera.mak
+
+CXX   = mpicxx -std=c++11
 F90   = mpif90
-FLAG  = -g -ftrapuv -fp-stack-check -fstack-protector-all -traceback -C -O0 #-O2 -w
-LIBS  = -L$(WORK)/CEQ -lceq
+FLAG  = -g -O0 -w #-O2 -w
+LIBS  = $(CANTERA_LIBS)
+LIBS += -L$(WORK)/ceq -lceq
 LIBS += -L$(WORK)/lapack-3.6.0/ -llapack -lrefblas
-LIBS += -L$(WORK)/sundials-2.6.1/sundials-2.6.1/lib -lsundials_cvode -lsundials_nvecserial
-INCS  = -I$(WORK)/CEQ
-INCS += -I$(WORK)/sundials-2.6.1/sundials-2.6.1/include/
-INCS += -I$(WORK)/cppad-2.0.0/cppad-2.0.0/include/
-INCS += -I$(WORK)/eigen-3.2.8/eigen-3.2.8/include/eigen3/
+INCS  = -I.
+INCS += $(CANTERA_INCLUDES)
+INCS += -I$(WORK)/ceq/
+INCS += -I$(WORK)/eigen-3.3.1/eigen-3.3.1/include/eigen3/
 LINK  = -lifcore
 
-all: simex
+all: redkin
 
-simex: localCEQ.o driver.o
-	$(CXX) $(FLAG) -o simex localCEQ.o driver.o $(LIBS) $(LINK)
+redkin: ceqct.o driver.o
+	$(CXX) $(FLAG) -o redkin ceqct.o driver.o $(LIBS) $(LINK)
 
-localCEQ.o: localCEQ.f90
+ceqct.o: ceqct.f90
 	$(F90) $(FLAG) -c $< $(INCS)
 
-driver.o: driver.cpp localCEQ.o
+driver.o: driver.cpp ceqct.o
 	$(CXX) $(FLAG) -c $< $(INCS)
 
 clean:
