@@ -9,7 +9,7 @@ class uqSolver {
 
  public:
     
-  uqSolver(mpiEnvironment& env, IdealGasMix& gas) {
+  uqSolver(mpiEnvironment& env, Cantera::IdealGasMix& gas) {
 
     rcceInteg* integ = new rcceInteg(gas);
     m_env = &env;
@@ -47,7 +47,7 @@ class uqSolver {
   vector< vector<double> > m_yk;
   vector<int>              m_combination;
   vector< vector<int> >    m_allcsi;
-  Integrator*              m_integ;
+  rcceInteg*               m_integ;
   mpiEnvironment*          m_env;
 
 };
@@ -344,7 +344,7 @@ void uqSolver::getCombinations(int offset, int k, vector< vector<int> >& v) {
 
   int lim;
   if(m_fuel == "H2O") {
-    lim = m_kk - 2;
+    lim = integ().m_kk - 2;
   } else if(m_fuel == "CH4") {
     lim = 20;
   }
