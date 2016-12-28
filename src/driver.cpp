@@ -9,7 +9,9 @@ int main(int argc, char **argv) {
   cout.precision(6);
   cout.setf(ios::scientific);
 
-  std::string    fuel    = "CH4";
+  std::string    fuel = "CH4";
+  std::string    mech = "gri30";
+  std::string    ctif = "ctis/"+mech+".cti";
   int            mod;
   int            vio  = 1;
   int            ver  = 0;
@@ -20,17 +22,13 @@ int main(int argc, char **argv) {
   double         tf   = 1.0e-03;
   double         dt   = 1.0e-09;
   double         Ti   = 1644.0;
-  double         p    = 3.76 * OneAtm;
-  vector<double> xi(m_kk,0.0);
+  double         p    = 3.76 * Cantera::OneAtm;
 
   /* MPI INIT */
   MPI_Init(&argc, &argv);
   mpiEnvironment myEnv(MPI_COMM_WORLD,argv[1]);
 
   /* ideal gas mixture */
-  std::string fuel = "H2O";
-  std::string mech = "sanDiego";
-  std::string ctif = "ctis/"+mech+".cti";
   Cantera::IdealGasMix myGas(ctif,"gas");
 
   /* uq solver */

@@ -17,7 +17,7 @@ class uqSolver {
 
   };
 
-  Integrator&     integ();
+  rcceInteg&      integ();
   mpiEnvironment& env();
   void            loadData(string& fuel);
   vector<double>  realization(vector<int>& csi);
@@ -53,7 +53,7 @@ class uqSolver {
 
 };
 
-Integrator& uqSolver::integ() {
+rcceInteg& uqSolver::integ() {
   return *m_integ;
 }; 
 
@@ -160,12 +160,12 @@ vector<double> uqSolver::realization(vector<int>& csi) {
     }
       
     /* (2) integrate */
-    integ().setInitialConditions(fuel, p, T0, phi, csi);
+    integ().setInitialConditions(m_fuel, p, T0, phi, csi);
     integ().integrate(flag, yk);
     mout.push_back(yk);
 
     /* (3) write output to file */
-    out << Ti << "\t" << yk << std::endl;
+    out << T0 << "\t" << yk << std::endl;
 
   }
 
@@ -268,6 +268,7 @@ double uqSolver::adaptiveSimpsons(int& level, int& maxLevel,
 
 double uqSolver::simpsonsRule(double& a, double& b) {
 
+  double OneSixth = 1.0 / 6.0;
   double c = 0.5 * (a + b);
   double fa = likelihood(a);
   double fb = likelihood(b);
@@ -350,9 +351,9 @@ void uqSolver::getCombinations(int offset, int k, vector< vector<int> >& v) {
   }
   
   for (int i = offset; i <= lim; ++i) {
-    string speciesName  = gas().speciesName(i);
-    int    speciesIndex = gas().speciesIndex(speciesName);
-    m_combinations.push_back(speciesIndex);
+    string speciesName  = integ().gas().speciesName(i);
+    int    speciesIndex = integ().gas().speciesIndex(speciesName);
+    m_combination.push_back(speciesIndex);
     getCombinations(i+1, k-1, v);
     m_combination.pop_back();
   }
@@ -370,6 +371,7 @@ void uqSolver::run(string& fuel, int& vio, int& ver,
   int                   root   = env().worldRoot();
   int                   size   = env().worldSize();
   int                   jump   = env().worldSize()-1;
+  vector<int>           msg(2,0);
   vector<int>           csi;
   vector<int>           local_size;
   vector< vector<int> > local_csi;
