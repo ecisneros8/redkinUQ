@@ -1,4 +1,3 @@
-#include "IdealGasMix.h"
 #include "rcceInteg.h"
 #include "mpiEnvironment.h"
 #include <cfloat>
