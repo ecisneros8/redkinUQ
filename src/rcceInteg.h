@@ -293,7 +293,7 @@ void rcceInteg::setInitialConditions(std::string& fuel, double& p, double& T0,
   m_cvode_flag = CVodeSVtolerances(m_cvode_mem, m_rtol, m_atol);
   m_cvode_flag = CVDense(m_cvode_mem, m_neq);
   m_cvode_flag = CVDlsSetDenseJacFn(m_cvode_mem, NULL);
-  m_cvode_flag = CVodeSetMinStep(m_cvode_mem, 1.0e-14);
+  m_cvode_flag = CVodeSetMinStep(m_cvode_mem, 1.0e-10);
 
   /********************************************/
   /* output files                             */
@@ -380,6 +380,8 @@ void rcceInteg::integrate(int& flag, double& mout) {
 	break;
 
       }
+      
+      if(tout < m_tf && fabs(m_T-m_Teq) < 0.05) break;
 
       if(tout >= m_tf) break;
 

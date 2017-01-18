@@ -20,7 +20,7 @@ then
 else
     echo "inps/comb/${NC}D/ is empty..."
 fi
-./preproc $NC $NP
+./preproc.exe $NC $NP
 
 # get number of jobs:
 #while read line

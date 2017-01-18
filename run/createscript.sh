@@ -26,5 +26,5 @@ echo "#!/bin/bash
 #PBS -o $WORKDIR/outs/prompt/${NC}D/rcce.CSI${JOB}.out
 #PBS -e $WORKDIR/outs/prompt/${NC}D/rcce.CSI${JOB}.err
 cd $WORKDIR
-mpiexec ./redkin $NC $JOB
+mpiexec ./redkin.exe $NC $JOB
 ">>submit.sh

@@ -17,13 +17,13 @@ LINK  = -lifcore
 all: preproc postproc redkin
 
 preproc: preprocessor.o
-	$(CXX) $(FLAG) -o preproc preprocessor.o
+	$(CXX) $(FLAG) -o preproc.exe preprocessor.o
 
 postproc: postprocessor.o
-	$(CXX) $(FLAG) -o postproc postprocessor.o
+	$(CXX) $(FLAG) -o postproc.exe postprocessor.o
 
 redkin: ceqct.o driver.o
-	$(CXX) $(FLAG) -o redkin ceqct.o driver.o $(LIBS) $(LINK)
+	$(CXX) $(FLAG) -o redkin.exe ceqct.o driver.o $(LIBS) $(LINK)
 
 preprocessor.o: preprocessor.cpp
 	$(CXX) $(FLAG) -c $<

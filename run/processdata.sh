@@ -27,7 +27,7 @@ echo "#!/bin/bash
 #PBS -o $WORKDIR/rccepp.${NC}.out
 #PBS -e $WORKDIR/rccepp.${NC}.err
 cd $WORKDIR
-./postproc $NC $ND $NF $TNC
+./postproc.exe $NC $ND $NF $TNC
 ">>ppsub.sh
 
 # run postprocessor
