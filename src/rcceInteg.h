@@ -22,17 +22,12 @@ class rcceInteg
 {
  public:
 
-  rcceInteg(Cantera::IdealGasMix& gas)
-    {
-      m_gas    = &gas;
-      m_kk     = m_gas->nSpecies();
-      m_mm     = m_gas->nElements();
-      m_method = CV_BDF;
-      m_iter   = CV_NEWTON;
-    };
+  rcceInteg() { };
     
   Cantera::IdealGasMix& gas() { return *m_gas; }
     
+  void setIdealGasMix(Cantera::IdealGasMix& gas);
+  
   void initialize(int& vio, int& ver, double& t0, double& tf, double& dt);
   
   void setInitialConditions(std::string& fuel, double& p, double& T0,
@@ -96,14 +91,24 @@ VectorXd              rcceInteg::m_R;
 MatrixXd              rcceInteg::m_C;
 Cantera::IdealGasMix* rcceInteg::m_gas;
 
+void rcceInteg::setIdealGasMix(Cantera::IdealGasMix& gas) {
+
+  m_gas = &gas;
+  m_kk  = m_gas->nSpecies();
+  m_mm  = m_gas->nElements();
+
+}
+
 void rcceInteg::initialize(int& vio, int& ver, double& t0, double& tf, double& dt) {
-    
+      
   // Integrator options
   m_vio = vio;
   m_ver = ver;
   m_t0  = t0;
   m_tf  = tf;
   m_dt  = dt;
+  m_method = CV_BDF;
+  m_iter   = CV_NEWTON;
     
 };
 
@@ -145,13 +150,6 @@ void rcceInteg::setInitialConditions(std::string& fuel, double& p, double& T0,
   x0[XF] = oar * phi / (nux + oar * phi);
   x0[XO] = nux * x0[XF] / phi;
   x0[XN] = 1.0 - (1.0 + nux/phi) * x0[XF];
-
-  std::cout << T0 << "\t" << p << std::endl;
-  std::cout << std::endl;
-  for(int k = 0; k < m_kk; ++k) {
-    std::cout << x0[k] << "\t";
-  }
-  std::cout << "\n" << std::endl;
 
   m_gas->setState_TPX(T0, p, x0);
   m_gas->equilibrate("HP", "auto");
@@ -277,7 +275,7 @@ void rcceInteg::setInitialConditions(std::string& fuel, double& p, double& T0,
   } else if(fuel == "CH4") {
     atol = 1.0e-08;
   }
-  
+
   m_cvode_mem  = NULL;
   m_cvode_data = NULL;
   m_atol       = NULL;
@@ -286,7 +284,7 @@ void rcceInteg::setInitialConditions(std::string& fuel, double& p, double& T0,
   m_statevec = N_VNew_Serial(m_neq);
   m_atol     = N_VNew_Serial(m_neq);
 
-  m_rtol = 1.0e-06;
+  m_rtol = 1.0e-08;
   for(int i = 0; i < m_neq; ++i) { Ith(m_statevec,i+1) = m_r(i); }
   for(int i = 0; i < m_neq; ++i) { Ith(m_atol,i+1)     = atol; }
 
@@ -321,7 +319,7 @@ void rcceInteg::setInitialConditions(std::string& fuel, double& p, double& T0,
     specs = specs+ostrc.str()+"-";
   }
     
-  m_filename = "outs/"+ndims+"D/";
+  m_filename = "outs/temp/"+ndims+"D/";
   m_filename = m_filename+"rcce";
   m_filename = m_filename+"."+temps+"K";
   m_filename = m_filename+"."+specs+"S";
@@ -377,7 +375,7 @@ void rcceInteg::integrate(int& flag, double& mout) {
 
       } else {
 
-	std::cout << "Dump CVode! \n" << std::endl;
+	//std::cout << "Dump CVode! \n" << std::endl;
 	mout = -1.0e10;;
 	break;
 
@@ -409,30 +407,53 @@ void rcceInteg::integrate(int& flag, double& mout) {
 double rcceInteg::modelOutput(std::vector<double>& all_T) {
 
   int                 nt = all_T.size();
-  double              w  = m_dt / 3.0;
+  double              w; //  = m_dt / 3.0;
   double              t  = m_t0;
+  double              OneSixth = 1.0/6.0;
   double              mout;
   std::vector<double> fnum(nt,0.0);
   std::vector<double> fden(nt,0.0);
+  std::string         mode = "trap";
 
   /* put the functions together */
   for(int i = 0; i < nt; ++i) {
     double T = all_T[i];
-    fden[i]  = (T - m_T0) * pow(m_Teq - T, 12.0);
-    fnum[i]  = fden[i] * t;
+    fden[i]  = pow(T - m_T0, 8.0) * pow(m_Teq - T, 8.0);
+    fnum[i]  = fden[i] * log(t);
     t += m_dt;
   }
 
-  /* now integrate them with simpsons rule */
+  /* integrate */
   double qnum = 0.0;
   double qden = 0.0;
-  for(int i = 0; i < nt-1; i+=2) {
-    qnum += w * (fnum[i+2] + 4.0 * fnum[i+1] + fnum[i]);
-    qden += w * (fden[i+2] + 4.0 * fden[i+1] + fden[i]); 
+
+  if(mode == "trap") {
+
+    /* integrate with trapezoidal rule */
+    t = m_t0;
+    for(int i = 0; i < nt-1; ++i) {
+      w     = log(t + m_dt) - log(t);
+      qnum += w * fnum[i+1] + fnum[i];
+      qden += w * fden[i+1] + fden[i];
+      t    += m_dt;
+    }
+
+  } else if(mode == "simp") {
+
+    /* integrate with simpsons rule */
+    t = m_t0;
+    for(int i = 0; i < nt-1; i+=2) {
+      w     = log(t+2*m_dt) - log(t);
+      qnum += OneSixth * w * (fnum[i+2] + 4.0 * fnum[i+1] + fnum[i]);
+      qden += OneSixth * w * (fden[i+2] + 4.0 * fden[i+1] + fden[i]);
+      t    += m_dt;
+    }
+
   }
 
   /* the ratio between integrals is the ignition time */
   mout = qnum/qden;
+  mout = exp(mout);
   mout = mout * 1.0e6;
 
   return(mout);

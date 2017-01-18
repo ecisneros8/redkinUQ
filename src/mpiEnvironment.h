@@ -7,7 +7,7 @@ class mpiEnvironment
 {
  public:
     
- mpiEnvironment(MPI_Comm inputComm, const char* options) :
+ mpiEnvironment(MPI_Comm inputComm, const char* OPT0, const char* OPT1) :
   m_worldRoot(0),
     m_worldRank(-1),
     m_worldSize(-1) {
@@ -15,16 +15,23 @@ class mpiEnvironment
     m_worldComm = inputComm;
     MPI_Comm_size(inputComm,&m_worldSize);
     MPI_Comm_rank(inputComm,&m_worldRank);
+   
+    m_worldOpts.resize(2);
 
-    istringstream istr(options);
-    istr >> m_worldOpts;
+    /* OPT0: number of constrained species */
+    istringstream istr0(OPT0);
+    istr0 >> m_worldOpts[0];
+
+    /* OPT1: combination file id */
+    istringstream istr1(OPT1);
+    istr1 >> m_worldOpts[1];
 
   };
 
   int  worldRank();
   int  worldSize();
   int  worldRoot();
-  int  worldOpts();
+  std::vector<int> worldOpts();
   void sendMessage(void* buf, int count, MPI_Datatype dtype, 
 		   int dest, int tag);
   void receiveMessage(void* buf, int count, MPI_Datatype dtype, 
@@ -36,7 +43,7 @@ class mpiEnvironment
   int        m_worldSize;
   int        m_worldRank;
   int        m_worldRoot;
-  int        m_worldOpts;
+  std::vector<int> m_worldOpts;
 
 };
 
@@ -52,7 +59,7 @@ int mpiEnvironment::worldSize() {
   return m_worldSize;
 };
 
-int mpiEnvironment::worldOpts() {
+std::vector<int> mpiEnvironment::worldOpts() {
   return m_worldOpts;
 };
 

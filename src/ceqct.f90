@@ -65,10 +65,6 @@ CONTAINS
     hor   = h0
     wts   = mw
 
-    write(*,*)
-    write(*,'(a,1p,2e13.4)') 'H/R, p0 = ', hor, patm
-    write(*,*)
-
     !=======================================================!
     ! set some ceq parameters
     lu_op = 0

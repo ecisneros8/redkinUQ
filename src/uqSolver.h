@@ -11,15 +11,14 @@ class uqSolver {
     
   uqSolver(mpiEnvironment& env, Cantera::IdealGasMix& gas) {
 
-    rcceInteg* integ = new rcceInteg(gas);
+    m_integ.setIdealGasMix(gas);
     m_env = &env;
 
   };
 
-  rcceInteg&      integ();
   mpiEnvironment& env();
   void            loadData(string& fuel);
-  vector<double>  realization(vector<int>& csi);
+  vector<double>  realization(ofstream& rec, vector<int>& csi);
   vector<double>  realizationFromFiles(vector<int>& csi);
   double          likelihood(double& sigma);
   double          gaussian(double& x);
@@ -28,7 +27,8 @@ class uqSolver {
 				   double& a, double& b, double& tol,
 				   double& IW);
   double          simpsonsRule(double& a, double& b);
-  void            posteriorRepresentation(int& rank, int& jump, int& ncsi);
+  void            posteriorRepresentation(int& rank, int& jump, int& ncsi, ofstream& rec);
+  void            getCombinationsFromFiles(vector< vector<int> >& v);
   void            getCombinations(int offset, int k, vector< vector<int> >& v);
   void            run(string& fuel, int& vio, int& ver,
 		      double& t0, double& tf, double& dt);    
@@ -37,8 +37,10 @@ class uqSolver {
   string                   m_fileroot; 
   string                   m_filename;
   string                   m_ndims;
+  string                   m_csinp;
   string                   m_fuel;
   int                      m_ncs;      // model class
+  int  			   m_job;
   int                      m_Nk;    
   double                   m_ddm;
   vector<double>           m_pk;
@@ -47,14 +49,11 @@ class uqSolver {
   vector< vector<double> > m_yk;
   vector<int>              m_combination;
   vector< vector<int> >    m_allcsi;
-  rcceInteg*               m_integ;
+  rcceInteg                m_integ;
   mpiEnvironment*          m_env;
 
 };
 
-rcceInteg& uqSolver::integ() {
-  return *m_integ;
-}; 
 
 mpiEnvironment& uqSolver::env() {
   return *m_env;
@@ -112,7 +111,7 @@ void uqSolver::loadData(string& fuel) {
 
 };
 
-vector<double> uqSolver::realization(vector<int>& csi) {
+vector<double> uqSolver::realization(ofstream& rec, vector<int>& csi) {
 
   /* declarations */
   ofstream       out;
@@ -134,7 +133,7 @@ vector<double> uqSolver::realization(vector<int>& csi) {
     specs = specs+ostrs.str()+"-";
   }
 
-  filename = "outs/mout/"+m_ndims+"D/";
+  filename = "outs/mout/"+m_ndims+"D/CSI"+m_csinp+"/";
   filename = filename+"rcce";
   filename = filename+"."+specs+"S";
   filename = filename+".dat";
@@ -143,6 +142,8 @@ vector<double> uqSolver::realization(vector<int>& csi) {
   out.precision(8);
   out.setf(ios::scientific);
   out.open(filename.c_str());
+
+  rec << "\t Looping over scenarios" << endl;
 
   /* run realization at every data point */
   for(int k = 0; k < m_Nk; ++k) {
@@ -159,14 +160,18 @@ vector<double> uqSolver::realization(vector<int>& csi) {
     }
       
     /* (2) integrate */
-    integ().setInitialConditions(m_fuel, p, T0, phi, csi);
-    integ().integrate(flag, yk);
+    rec << "\t Integrating " << k+1 << "th scenario: p = " << p << ", T = " << T0 << endl;
+    m_integ.setInitialConditions(m_fuel, p, T0, phi, csi);
+    m_integ.integrate(flag, yk);
+    rec << "\t Done with " << k+1 << "th scenario..." << endl; 
     mout.push_back(yk);
 
     /* (3) write output to file */
     out << T0 << "\t" << yk << std::endl;
 
   }
+
+  rec << "\t All model outputs have been computed..." << endl;
 
   /* close output file */
   out.close();
@@ -192,7 +197,7 @@ vector<double> uqSolver::realizationFromFiles(vector<int>& csi) {
     specs = specs + ostrs.str() + "-";
   }
 
-  filename = "outs/mout/"+m_ndims+"D/";
+  filename = "outs/mout/"+m_ndims+"D/CSI"+m_csinp+"/";
   filename = filename+"rcce";
   filename = filename+"."+specs+"S";
   filename = filename+".dat";
@@ -278,7 +283,7 @@ double uqSolver::simpsonsRule(double& a, double& b) {
 
 }
   
-void uqSolver::posteriorRepresentation(int& rank, int& jump, int& ncsi) {
+void uqSolver::posteriorRepresentation(int& rank, int& jump, int& ncsi, ofstream& rec) {
 
   /* declarations */
   ofstream                 out;
@@ -294,11 +299,13 @@ void uqSolver::posteriorRepresentation(int& rank, int& jump, int& ncsi) {
 
   /* output file */
   orank    << rank;
-  filename = "outs/prep/"+m_ndims+"D/";
+  filename = "outs/prep/"+m_ndims+"D/CSI"+m_csinp+"/";
   filename = filename+"gri30.prep."+orank.str()+".dat";
   out.precision(6);
   out.setf(ios::scientific);
   out.open(filename.c_str());
+
+  rec << "\t Looping over local combinations..." << endl;
 
   /* compute statistics */
   for(int i = 0; i < ncsi; ++i) {
@@ -311,28 +318,51 @@ void uqSolver::posteriorRepresentation(int& rank, int& jump, int& ncsi) {
     }
       
     sigopt = sqrt(2.0 * m_ddm / m_Nk);
-      
+    sigmax = 10.0 * sigopt;
+
+    rec << "\t Computing posterior for the " << i+1 << "th local combination..." << endl;
     IL = adaptiveQuadrature(sigmin, sigopt, tol);
     IR = adaptiveQuadrature(sigopt, sigmax, tol);
     prep.push_back(IL+IR);
+    rec << "\t Posterior computed..." << endl;
 
     /* output */
     cout << rank << "\t" << i*jump+rank << "\t";
     for(int s = 0; s < m_ncs; ++s) {
-      cout << integ().gas().speciesName(m_allcsi[i*jump+rank-1][s]) << "\t";
-      out  << integ().gas().speciesName(m_allcsi[i*jump+rank-1][s]) << "\t";
+      cout << m_integ.gas().speciesName(m_allcsi[i*jump+rank-1][s]) << "\t";
+      out  << m_integ.gas().speciesName(m_allcsi[i*jump+rank-1][s]) << "\t";
     }
     cout << prep[i] << endl;
     out  << prep[i] << endl;
       
   }
 
+  rec << "\t Posteriors computed successfully..." << endl;
+
   cout << "Done with rank " << rank << endl;
   cout << endl;
     
   /* close output file */
   out.close();
+  
+}
 
+void uqSolver::getCombinationsFromFiles(vector< vector<int> >& v) {
+
+  string      filename = "inps/comb/"+m_ndims+"D/"+"csi."+m_csinp+".dat";
+  ifstream    inp;
+  int         i;
+  vector<int> csi(m_ncs);
+  inp.open(filename.c_str());
+  
+  while(!inp.eof()) {
+    for(int j = 0; j < m_ncs; ++j) {
+      inp >> csi[j];
+    }
+    v.push_back(csi);
+  }
+  v.pop_back();
+ 
 }
 
 void uqSolver::getCombinations(int offset, int k, vector< vector<int> >& v) {
@@ -344,19 +374,19 @@ void uqSolver::getCombinations(int offset, int k, vector< vector<int> >& v) {
 
   int lim;
   if(m_fuel == "H2O") {
-    lim = integ().m_kk - 2;
+    lim = m_integ.gas().nSpecies() - 2;
   } else if(m_fuel == "CH4") {
     lim = 20;
   }
-  
+
   for (int i = offset; i <= lim; ++i) {
-    string speciesName  = integ().gas().speciesName(i);
-    int    speciesIndex = integ().gas().speciesIndex(speciesName);
+    string speciesName  = m_integ.gas().speciesName(i);
+    int    speciesIndex = m_integ.gas().speciesIndex(speciesName);
     m_combination.push_back(speciesIndex);
     getCombinations(i+1, k-1, v);
     m_combination.pop_back();
   }
-  
+
 }
 
 void uqSolver::run(string& fuel, int& vio, int& ver,
@@ -375,21 +405,29 @@ void uqSolver::run(string& fuel, int& vio, int& ver,
   vector<int>           local_size;
   vector< vector<int> > local_csi;
   ostringstream         ostrncs;
+  ostringstream         ostrjob;
   ostringstream         orank;
 
-  /* model class */
-  m_ncs   = env().worldOpts();
+  /* model & combination info */ 
+  m_ncs   = env().worldOpts()[0];
+  m_job   = env().worldOpts()[1];
   ostrncs << m_ncs;
+  ostrjob << m_job;
   m_ndims = ostrncs.str();
+  m_csinp = ostrjob.str();
 
   /* load data */
+  if(rank == root) { std::cout << "\t Loading data..." << std::endl; }	
   loadData(fuel);
 
   /* initialize integrator */
-  integ().initialize(vio, ver, t0, tf, dt);
+  if(rank == root) { std::cout << "\t Initializing integrator..." << std::endl; }
+  m_integ.initialize(vio, ver, t0, tf, dt);
 
   /* access parameter space */
-  getCombinations(0, m_ncs, m_allcsi);
+  if(rank == root) { std::cout << "\t Getting all combinations..." << std::endl; }
+  getCombinationsFromFiles(m_allcsi);
+  //getCombinations(0, m_ncs, m_allcsi);
   csi.resize(m_ncs);
     
   if(rank != root) {
@@ -414,7 +452,7 @@ void uqSolver::run(string& fuel, int& vio, int& ver,
 
   } else {
 
-    filename = "outs/logs/"+m_ndims+"D/";
+    filename = "outs/logs/"+m_ndims+"D/CSI"+m_csinp+"/";
     filename = filename+"gri30.run.root.log";
     out.open(filename.c_str());
 
@@ -450,41 +488,44 @@ void uqSolver::run(string& fuel, int& vio, int& ver,
 
     /* open log file */
     orank    << rank;
-    filename = "outs/logs/"+m_ndims+"D/";
+    filename = "outs/logs/"+m_ndims+"D/CSI"+m_csinp+"/";
     filename = filename+"gri30.run."+orank.str()+".log";
-      
+
+    out.precision(4);
+    out.setf(std::ios::scientific);
     out.open(filename.c_str());
       
     /* model outputs */
     for(int i = 0; i < ncsi; ++i) {
 	
       /* print m.id. to log */
-      out  << "Working with the " << i
-	   << "th local combination, " << i*jump+rank
-	   << "th overall..." << endl;
+      out  << "Working with the " << i+1
+	   << "th local combination, " << endl; 
       out  << "Represented Species: " << endl;
-      cout << "Represented Species: " << endl;
+      //cout << "Represented Species: " << endl;
       for(int s = 0; s < m_ncs; ++s) {
-	cout << integ().gas().speciesName( m_allcsi[i*jump+rank-1][s] ) << "\t";
-	out  << integ().gas().speciesName( m_allcsi[i*jump+rank-1][s] ) << "\t";
+	//cout << m_integ.gas().speciesName( m_allcsi[i*jump+rank-1][s] ) << "\t";
+	out  << "(" << m_allcsi[i*jump+rank-1][s] << "): " << m_integ.gas().speciesName( m_allcsi[i*jump+rank-1][s] ) << "\t";
       }
-      cout << endl;
+      //cout << endl;
       out << endl;
 
       /* compute ignition times */
-      csi  = local_csi[i];
-      //vector<double> yi = realization(csi);
-      vector<double> yi = realizationFromFiles(csi);
-      cout << "Done!" << endl;
-      cout << endl;
+      out << "Computing realiations..." << endl;
+      csi    = local_csi[i];
+      vector<double> yi = realization(out, csi);
+      out << "Realizations computed..." << endl;
+      //vector<double> yi = realizationFromFiles(csi);
       m_yk[i] = yi;
+      out << endl;
 
     }
 
-    out.close();
-
     /* compute and write posteriors */
-    posteriorRepresentation(rank, jump, ncsi);
+    out << "Computing posteriors..." << endl; 
+    posteriorRepresentation(rank, jump, ncsi, out);
+    out << "Rank " << rank << " done... Goodbye!" << endl;
+    out.close();
 
   }
 
